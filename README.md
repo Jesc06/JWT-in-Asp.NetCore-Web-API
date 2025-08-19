@@ -35,6 +35,8 @@ Add a section for JWT settings in your `appsettings.json` file:
 - **Audience**: Who the token is intended for (clients/users).
 - **ExpireMinutes**: Token expiration time in minutes.
 
+**Location:** This file is in the **root folder** of your Web API project.
+
 ---
 
 ## 3. Create the `GenerateTokenService` in Infrastructure Layer
@@ -42,6 +44,7 @@ Add a section for JWT settings in your `appsettings.json` file:
 This service will generate JWT tokens when a user logs in.
 
 ```csharp
+// File location: Infrastructure/Services/GenerateTokenService.cs
 using System;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
@@ -94,6 +97,8 @@ namespace RecordManagementSystem.Infrastructure.Services
 }
 ```
 
+**Location:** `Infrastructure/Services/GenerateTokenService.cs`
+
 ---
 
 ## 4. Call the Token Service in Application Layer
@@ -101,6 +106,7 @@ namespace RecordManagementSystem.Infrastructure.Services
 In your **AuthService** (or wherever you handle login):
 
 ```csharp
+// File location: Application/Services/AuthService.cs
 public async Task<TokenResponseDTO> Login(LoginDTO loginDTO)
 {
     var isLogin = await _authService.Login(loginDTO);
@@ -115,6 +121,8 @@ public async Task<TokenResponseDTO> Login(LoginDTO loginDTO)
 }
 ```
 
+**Location:** `Application/Services/AuthService.cs`
+
 ---
 
 ## 5. Configure Authentication in `Program.cs` (or `Startup.cs`)
@@ -122,6 +130,7 @@ public async Task<TokenResponseDTO> Login(LoginDTO loginDTO)
 Add JWT authentication to the DI container:
 
 ```csharp
+// File location: Program.cs
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
@@ -161,6 +170,8 @@ builder.Services.AddAuthentication(options =>
 });
 ```
 
+**Location:** `Program.cs`
+
 ---
 
 ## 6. Enable Authentication Middleware
@@ -171,4 +182,8 @@ Make sure you add authentication and authorization middleware in the request pip
 app.UseAuthentication();
 app.UseAuthorization();
 ```
+
+**Location:** `Program.cs` (inside the `app` pipeline setup)
+
+---
 

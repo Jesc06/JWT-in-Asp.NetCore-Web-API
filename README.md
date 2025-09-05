@@ -1,5 +1,11 @@
 # 🔑 JWT Authentication Setup (ASP.NET Core Web API)
 
+
+**[Blazor ClientSide JWT Configuration](https://github.com/Jesc06/JWT-in-Asp.NetCore-Web-API.git)**  
+You can check out this repository for more info on how to configure JWT authentication in a Blazor ClientSide.
+
+---
+
 This guide shows you **step by step** how to add **JWT Authentication** to an ASP.NET Core Web API project using **Clean Architecture** (Application + Infrastructure layers).  
 No prior JWT experience required. 🚀
 

@@ -134,6 +134,41 @@ public class RefreshTokenDTO
 
 ---
 
+## 4️⃣ Create Refresh Token Entity and DbContext
+
+### `RefreshToken` Entity
+```csharp
+namespace RecordManagementSystem.Domain.Entities.Token
+{
+    public class RefreshToken
+    {
+        public int Id { get; set; }
+        public string Username { get; set; }
+        public string Token { get; set; }
+        public DateTime ExpiryDate { get; set; }
+        public bool IsRevoked { get; set; }
+    }
+}
+```
+
+### `ApplicationDbContext`
+```csharp
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
+using RecordManagementSystem.Domain.Entities.Account;
+using RecordManagementSystem.Domain.Entities.Token;
+
+namespace RecordManagementSystem.Infrastructure.Persistence.Data
+{
+    public class ApplicationDbContext : IdentityDbContext<UserIdentity>
+    {
+        public DbSet<RefreshToken> RefreshTokens { get; set; }
+    }
+}
+```
+
+---
+
 ## 5️⃣ Create `RefreshTokenService` (Infrastructure Layer)
 
 Handles saving and updating refresh tokens in the database.

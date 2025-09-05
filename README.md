@@ -1,27 +1,26 @@
-# JWT Authentication Setup in ASP.NET Core Web API
+# 🔑 JWT Authentication Setup (ASP.NET Core Web API)
 
-This guide explains step-by-step how to set up **JWT Authentication** in an ASP.NET Core Web API project using **Clean Architecture** (with Infrastructure and Application layers). It’s beginner-friendly and assumes no prior deep knowledge of JWT.
+This guide shows you **step by step** how to add **JWT Authentication** to an ASP.NET Core Web API project using **Clean Architecture** (Application + Infrastructure layers).  
+No prior JWT experience required. 🚀
 
 ---
 
-## 1. Install Required Packages
+## 1️⃣ Install Required NuGet Packages
 
-Make sure you have installed these NuGet packages:
+Run these commands in your terminal:
 
 ```bash
 dotnet add package Microsoft.AspNetCore.Authentication.JwtBearer
 dotnet add package System.IdentityModel.Tokens.Jwt
 ```
 
-These packages are necessary for JWT token creation and authentication.
+✅ These packages let you **create** and **validate** JWT tokens.
 
 ---
 
-## 2. Configure JWT Settings in `appsettings.json`
+## 2️⃣ Add JWT Settings to `appsettings.json`
 
-Add a section for JWT settings in your `appsettings.json` file:
-
-```json
+```jsonc
 "Jwt": {
   "key": "AspDotnet_Core_Clean_Architecture_Dotnet_nine",
   "Issuer": "RecordManagementSystem",
@@ -30,107 +29,188 @@ Add a section for JWT settings in your `appsettings.json` file:
 }
 ```
 
-- **key**: Secret key used to sign the token (keep it safe!).
-- **Issuer**: The entity that issues the token (usually your API).
-- **Audience**: Who the token is intended for (clients/users).
-- **ExpireMinutes**: Token expiration time in minutes.
+| Setting          | Description                                    |
+|------------------|-----------------------------------------------|
+| **key**          | Secret key for signing tokens – keep it safe! |
+| **Issuer**       | Who issues the token (your API).              |
+| **Audience**     | Who can use the token (your clients/users).   |
+| **ExpireMinutes**| Token lifetime in minutes.                    |
 
-**Location:** This file is in the **root folder** of your Web API project.
+📂 **File location:** root folder of your Web API project.
 
 ---
 
-## 3. Create the `GenerateTokenService` in Infrastructure Layer
+## 3️⃣ Create `GenerateTokenService` (Infrastructure Layer)
 
-This service will generate JWT tokens when a user logs in.
+Generates JWT + Refresh tokens when user logs in.
 
 ```csharp
-// File location: Infrastructure/Services/GenerateTokenService.cs
-using System;
+// Infrastructure/Services/GenerateTokenService.cs
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
 using RecordManagementSystem.Application.Features.Account.DTO;
 using RecordManagementSystem.Application.Features.Account.Interface;
 
-namespace RecordManagementSystem.Infrastructure.Services
+namespace RecordManagementSystem.Infrastructure.Services;
+
+public class GenerateTokenService : IGenerateTokenService
 {
-    public class GenerateTokenService : IGenerateTokenService
+    private readonly IConfiguration _config;
+    public GenerateTokenService(IConfiguration config) => _config = config;
+
+    public TokenResponseDTO GenerateToken(string username, string role)
     {
-        private readonly IConfiguration _config;
-
-        public GenerateTokenService(IConfiguration config)
+        var claims = new[]
         {
-            _config = config;
-        }
+            new Claim(JwtRegisteredClaimNames.Sub, username),
+            new Claim(ClaimTypes.Role, role),
+            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+        };
 
-        public TokenResponseDTO GenerateToken(string username, string role)
+        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_config["Jwt:key"]));
+        var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+        var expiration = DateTime.UtcNow.AddMinutes(double.Parse(_config["Jwt:ExpireMinutes"]));
+
+        var token = new JwtSecurityToken(
+            issuer: _config["Jwt:Issuer"],
+            audience: _config["Jwt:Audience"],
+            claims: claims,
+            expires: expiration,
+            signingCredentials: creds
+        );
+
+        return new TokenResponseDTO
         {
-            var claims = new[]
-            {
-                new Claim(JwtRegisteredClaimNames.Sub, username),
-                new Claim(ClaimTypes.Role, role),
-                new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
-            };
+            Token = new JwtSecurityTokenHandler().WriteToken(token),
+            ExpiresIn = (int)(expiration - DateTime.UtcNow).TotalSeconds,
+            Role = role,
+            RefreshToken = GenerateRefreshToken(),
+            RefreshTokenExpiry = DateTime.UtcNow.AddDays(7)
+        };
+    }
 
-            var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_config["Jwt:key"]));
-            var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-            var expiration = DateTime.UtcNow.AddMinutes(Convert.ToDouble(_config["Jwt:ExpireMinutes"]));
-
-            var token = new JwtSecurityToken(
-                issuer: _config["Jwt:Issuer"],
-                audience: _config["Jwt:Audience"],
-                claims: claims,
-                expires: expiration,
-                signingCredentials: creds
-            );
-
-            return new TokenResponseDTO
-            {
-                Token = new JwtSecurityTokenHandler().WriteToken(token),
-                ExpiresIn = (int)(expiration - DateTime.UtcNow).TotalSeconds,
-                Role = role
-            };
-        }
+    private static string GenerateRefreshToken()
+    {
+        var randomBytes = new byte[64];
+        using var rng = RandomNumberGenerator.Create();
+        rng.GetBytes(randomBytes);
+        return Convert.ToBase64String(randomBytes);
     }
 }
 ```
 
-**Location:** `Infrastructure/Services/GenerateTokenService.cs`
+---
+
+## 4️⃣ Create DTOs
+
+### `TokenResponseDTO`
+```csharp
+namespace RecordManagementSystem.Application.Features.Account.DTO;
+
+public class TokenResponseDTO
+{
+    public string Token { get; set; }
+    public int ExpiresIn { get; set; }
+    public string Role { get; set; }
+
+    public string RefreshToken { get; set; }
+    public DateTime RefreshTokenExpiry { get; set; }
+}
+```
+
+### `RefreshTokenDTO`
+```csharp
+namespace RecordManagementSystem.Application.Features.Account.DTO;
+
+public class RefreshTokenDTO
+{
+    public string RefreshToken { get; set; }
+}
+```
 
 ---
 
-## 4. Call the Token Service in Application Layer
+## 5️⃣ Create `RefreshTokenService` (Infrastructure Layer)
 
-In your **AuthService** (or wherever you handle login):
+Handles saving and updating refresh tokens in the database.
 
 ```csharp
-// File location: Application/Services/AuthService.cs
+using Microsoft.EntityFrameworkCore;
+using RecordManagementSystem.Application.Features.Account.Interface;
+using RecordManagementSystem.Domain.Entities.Token;
+using RecordManagementSystem.Infrastructure.Persistence.Data;
+
+namespace RecordManagementSystem.Infrastructure.Services;
+
+public class RefreshTokenService : IRefreshToken
+{
+    private readonly ApplicationDbContext _context;
+    public RefreshTokenService(ApplicationDbContext context) => _context = context;
+
+    public async Task AddAsync(RefreshToken refreshToken)
+    {
+        _context.RefreshTokens.Add(refreshToken);
+        await _context.SaveChangesAsync();
+    }
+
+    public async Task<RefreshToken?> GetByTokenAsync(string token) =>
+        await _context.RefreshTokens.FirstOrDefaultAsync(x => x.Token == token && !x.IsRevoked);
+
+    public async Task UpdateAsync(RefreshToken refreshToken)
+    {
+        _context.RefreshTokens.Update(refreshToken);
+        await _context.SaveChangesAsync();
+    }
+}
+```
+
+---
+
+## 6️⃣ Use Token Service in `AuthService` (Application Layer)
+
+```csharp
 public async Task<TokenResponseDTO> Login(LoginDTO loginDTO)
 {
     var isLogin = await _authService.Login(loginDTO);
-    if (isLogin)
-    {
-        // Generate token for the user
-        var token = _generateTokenService.GenerateToken(loginDTO.Email, "Student");
-        return token;
-    }
+    if (!isLogin) throw new UnauthorizedAccessException("Invalid credentials!");
 
-    throw new UnauthorizedAccessException("Invalid credentials!");
+    var token = _generateTokenService.GenerateToken(loginDTO.Email, "Student");
+
+    await _refreshToken.AddAsync(new RefreshToken
+    {
+        Username = loginDTO.Email,
+        Token = token.RefreshToken,
+        ExpiryDate = token.RefreshTokenExpiry,
+        IsRevoked = false
+    });
+
+    return token;
+}
+
+public async Task<TokenResponseDTO> RefreshToken(RefreshTokenDTO refreshTokenDTO)
+{
+    var savedToken = await _refreshToken.GetByTokenAsync(refreshTokenDTO.RefreshToken);
+    if (savedToken is null || savedToken.ExpiryDate < DateTime.UtcNow)
+        throw new UnauthorizedAccessException("Invalid or expired refresh token");
+
+    var newTokens = _generateTokenService.GenerateToken(savedToken.Username, "Student");
+    savedToken.Token = newTokens.RefreshToken;
+    savedToken.ExpiryDate = newTokens.RefreshTokenExpiry;
+    await _refreshToken.UpdateAsync(savedToken);
+
+    return newTokens;
 }
 ```
 
-**Location:** `Application/Services/AuthService.cs`
-
 ---
 
-## 5. Configure Authentication in `Program.cs` (or `Startup.cs`)
-
-Add JWT authentication to the DI container:
+## 7️⃣ Configure Authentication in `Program.cs`
 
 ```csharp
-// File location: Program.cs
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
@@ -152,38 +232,23 @@ builder.Services.AddAuthentication(options =>
         ValidateIssuerSigningKey = true,
         ValidIssuer = jwtSettings["Issuer"],
         ValidAudience = jwtSettings["Audience"],
-        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSettings["key"]))
-    };
-
-    options.Events = new JwtBearerEvents
-    {
-        OnMessageReceived = context =>
-        {
-            // Support for JWT in cookies (optional)
-            if (context.Request.Cookies.ContainsKey("Jwt"))
-            {
-                context.Token = context.Request.Cookies["Jwt"];
-            }
-            return Task.CompletedTask;
-        }
+        IssuerSigningKey = new SymmetricSecurityKey(
+            Encoding.UTF8.GetBytes(jwtSettings["key"]))
     };
 });
+
+builder.Services.AddAuthorization();
 ```
 
-**Location:** `Program.cs`
-
----
-
-## 6. Enable Authentication Middleware
-
-Make sure you add authentication and authorization middleware in the request pipeline:
+Enable middleware:
 
 ```csharp
 app.UseAuthentication();
 app.UseAuthorization();
 ```
 
-**Location:** `Program.cs` (inside the `app` pipeline setup)
-
 ---
 
+✅ **Done!**  
+Your API is now secured with **JWT authentication + refresh tokens**.  
+You can test it by logging in, getting a token, and calling a `[Authorize]` endpoint.

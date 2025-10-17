@@ -1,11 +1,5 @@
 # 🔑 JWT Authentication Setup (ASP.NET Core Web API)
 
-
-**[Blazor ClientSide JWT Configuration](https://github.com/Jesc06/JWT-in-Asp.NetCore-Web-API.git)**  
-You can check out this repository for more info on how to configure JWT authentication in a Blazor ClientSide.
-
----
-
 This guide shows you **step by step** how to add **JWT Authentication** to an ASP.NET Core Web API project using **Clean Architecture** (Application + Infrastructure layers).  
 No prior JWT experience required. 🚀
 
@@ -26,14 +20,17 @@ dotnet add package System.IdentityModel.Tokens.Jwt
 
 ## 2️⃣ Add JWT Settings to `appsettings.json`
 
-```jsonc
-"Jwt": {
-  "key": "AspDotnet_Core_Clean_Architecture_Dotnet_nine",
-  "Issuer": "RecordManagementSystem",
-  "Audience": "Users",
-  "ExpireMinutes": 60
-}
+```json
+  "Jwt": {
+    "key": "AspDotnet_Core_Clean_Architecture_Dotnet_nine",
+    "Issuer": "RecordManagementSystem",
+    "Audience": "Users",
+    "DurationInMinutes": 1,
+    "RefreshTokenDurationInMinutes": 2
+  },
 ```
+
+---
 
 | Setting          | Description                                    |
 |------------------|-----------------------------------------------|
@@ -46,237 +43,388 @@ dotnet add package System.IdentityModel.Tokens.Jwt
 
 ---
 
-## 3️⃣ Create `GenerateTokenService` (Infrastructure Layer)
+
+
+## 4️⃣ Create DTOs
+
+### `GenerateTokenDTO`
+```csharp
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace RecordManagementSystem.Application.Features.Account.DTO
+{
+    public class JwtApplicationUserDTO
+    {
+        public string id { get; set; }
+        public string username { get; set; }
+        public string email { get; set; }
+        public IList<string> Roles { get; set; } = new List<string>();
+    }
+}   
+
+
+```
+
+### `GenerateJwtTokenResponseDTO`
+```csharp
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace RecordManagementSystem.Application.Features.Account.DTO
+{
+    public class GenerateJwtTokenResponseDTO
+    {
+        public string AccessToken { get; set; } 
+        public string RefreshToken { get; set; }
+    }
+}
+
+
+```
+
+### `JwtRefreshTokenResponseDTO`
+```csharp
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace RecordManagementSystem.Application.Features.Account.DTO
+{
+    public class JwtRefreshTokenRequestDTO
+    {
+        public string newAccessToken { get; set; }
+        public string newRefreshToken { get; set; }
+    }
+}
+
+```
+
+### `JwtRefreshTokenRequestDTO`
+```csharp
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace RecordManagementSystem.Application.Features.Account.DTO
+{
+    public class JwtRefreshTokenRequestDTO
+    {
+        public string newAccessToken { get; set; }
+        public string newRefreshToken { get; set; }
+    }
+}
+
+```
+
+<br>
+
+
+## 3️⃣ Create `JWTService` (Infrastructure Layer)
 
 Generates JWT + Refresh tokens when user logs in.
 
 ```csharp
-// Infrastructure/Services/GenerateTokenService.cs
-using System.IdentityModel.Tokens.Jwt;
-using System.Security.Claims;
-using System.Security.Cryptography;
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Text;
+using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
+using RecordManagementSystem.Application.Features.Account.Interface;
+using RecordManagementSystem.Application.Features.Account.DTO;
+using System.Security.Claims;
+using System.IdentityModel.Tokens.Jwt;
 using Microsoft.IdentityModel.Tokens;
+using System.Security.Cryptography;
+
+namespace RecordManagementSystem.Infrastructure.Services
+{
+    public class JwtService : IJwtToken
+    {
+        private readonly IConfiguration _configuration;
+        private readonly Byte[] _key;
+        public JwtService(IConfiguration configuration)
+        {
+            _configuration = configuration;
+            _key = Encoding.UTF8.GetBytes(_configuration["Jwt:key"]!);
+        }
+
+        public string GenerateAccessJwtToken(GenerateTokenDTO user, IEnumerable<Claim>? additionalClaims = null)
+        {
+            var duration = double.Parse(_configuration["Jwt:DurationInMinutes"] ?? "1");
+
+            var claims = new List<Claim>
+            {
+                new Claim(JwtRegisteredClaimNames.Sub, user.username ?? ""),
+                new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+                new Claim("uid", user.id.ToString())
+            };
+            if (user.Roles != null)
+                claims.AddRange(user.Roles.Select(r => new Claim("role", r)));
+
+            if (additionalClaims != null)
+                claims.AddRange(additionalClaims);
+
+            var credentials = new SigningCredentials(new SymmetricSecurityKey(_key), SecurityAlgorithms.HmacSha256);
+            var token = new JwtSecurityToken(
+                issuer: _configuration["Jwt:Issuer"],
+                audience: _configuration["Jwt:Audience"],
+                claims: claims,
+                expires: DateTime.UtcNow.AddMinutes(duration),
+                signingCredentials: credentials
+            );
+
+            return new JwtSecurityTokenHandler().WriteToken(token);
+        }
+
+        public string GenerateRefreshJwtToken()
+        {
+            var bytes = new byte[64];
+            using var rng = RandomNumberGenerator.Create();
+            rng.GetBytes(bytes);
+            return Convert.ToBase64String(bytes);
+        }
+
+        public string HashRefreshToken(string token)
+        {
+            using var sha256 = SHA256.Create();
+            var bytes = Encoding.UTF8.GetBytes(token);
+            return Convert.ToBase64String(sha256.ComputeHash(bytes));
+        }
+
+        public bool VerfiyHashedJwtToken(string hash, string token)
+        {
+            return hash == HashRefreshToken(token);
+        }
+
+        public ClaimsPrincipal? GetPrincipalFromExpiredJwtToken(string token)
+        {
+            var validationParams = new TokenValidationParameters
+            {
+                ValidateIssuer = true,
+                ValidateAudience = true,
+                ValidIssuer = _configuration["Jwt:Issuer"],
+                ValidAudience = _configuration["Jwt:Audience"],
+                ValidateIssuerSigningKey = true,
+                IssuerSigningKey = new SymmetricSecurityKey(_key),
+                ValidateLifetime = false // allow expired token to get claims
+            };
+
+            var handler = new JwtSecurityTokenHandler();
+            try
+            {
+                var principal = handler.ValidateToken(token, validationParams, out var securityToken);
+                if (securityToken is not JwtSecurityToken jwt ||
+                    !jwt.Header.Alg.Equals(SecurityAlgorithms.HmacSha256, StringComparison.InvariantCultureIgnoreCase))
+                    return null;
+                return principal;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+    }
+}
+
+```
+
+
+## 7️⃣ `Implementing JWTService in AuthService`
+
+```csharp
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using RecordManagementSystem.Application.Common.Models;
 using RecordManagementSystem.Application.Features.Account.DTO;
 using RecordManagementSystem.Application.Features.Account.Interface;
-
-namespace RecordManagementSystem.Infrastructure.Services;
-
-public class GenerateTokenService : IGenerateTokenService
-{
-    private readonly IConfiguration _config;
-    public GenerateTokenService(IConfiguration config) => _config = config;
-
-    public TokenResponseDTO GenerateToken(string username, string role)
-    {
-        var claims = new[]
-        {
-            new Claim(JwtRegisteredClaimNames.Sub, username),
-            new Claim(ClaimTypes.Role, role),
-            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
-        };
-
-        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_config["Jwt:key"]));
-        var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-        var expiration = DateTime.UtcNow.AddMinutes(double.Parse(_config["Jwt:ExpireMinutes"]));
-
-        var token = new JwtSecurityToken(
-            issuer: _config["Jwt:Issuer"],
-            audience: _config["Jwt:Audience"],
-            claims: claims,
-            expires: expiration,
-            signingCredentials: creds
-        );
-
-        return new TokenResponseDTO
-        {
-            Token = new JwtSecurityTokenHandler().WriteToken(token),
-            ExpiresIn = (int)(expiration - DateTime.UtcNow).TotalSeconds,
-            Role = role,
-            RefreshToken = GenerateRefreshToken(),
-            RefreshTokenExpiry = DateTime.UtcNow.AddDays(7)
-        };
-    }
-
-    private static string GenerateRefreshToken()
-    {
-        var randomBytes = new byte[64];
-        using var rng = RandomNumberGenerator.Create();
-        rng.GetBytes(randomBytes);
-        return Convert.ToBase64String(randomBytes);
-    }
-}
-```
-
----
-
-## 4️⃣ Create DTOs
-
-### `TokenResponseDTO`
-```csharp
-namespace RecordManagementSystem.Application.Features.Account.DTO;
-
-public class TokenResponseDTO
-{
-    public string Token { get; set; }
-    public int ExpiresIn { get; set; }
-    public string Role { get; set; }
-
-    public string RefreshToken { get; set; }
-    public DateTime RefreshTokenExpiry { get; set; }
-}
-```
-
-### `RefreshTokenDTO`
-```csharp
-namespace RecordManagementSystem.Application.Features.Account.DTO;
-
-public class RefreshTokenDTO
-{
-    public string RefreshToken { get; set; }
-}
-```
-
----
-
-## 4️⃣ Create Refresh Token Entity and DbContext
-
-### `RefreshToken` Entity
-```csharp
-namespace RecordManagementSystem.Domain.Entities.Token
-{
-    public class RefreshToken
-    {
-        public int Id { get; set; }
-        public string Username { get; set; }
-        public string Token { get; set; }
-        public DateTime ExpiryDate { get; set; }
-        public bool IsRevoked { get; set; }
-    }
-}
-```
-
-### `ApplicationDbContext`
-```csharp
-using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore;
-using RecordManagementSystem.Domain.Entities.Account;
-using RecordManagementSystem.Domain.Entities.Token;
-
-namespace RecordManagementSystem.Infrastructure.Persistence.Data
-{
-    public class ApplicationDbContext : IdentityDbContext<UserIdentity>
-    {
-        public DbSet<RefreshToken> RefreshTokens { get; set; }
-    }
-}
-```
-
----
-
-## 5️⃣ Create `RefreshTokenService` (Infrastructure Layer)
-
-Handles saving and updating refresh tokens in the database.
-
-```csharp
-using Microsoft.EntityFrameworkCore;
-using RecordManagementSystem.Application.Features.Account.Interface;
-using RecordManagementSystem.Domain.Entities.Token;
 using RecordManagementSystem.Infrastructure.Persistence.Data;
+using System;
+using System.Collections.Generic;
+using System.IdentityModel.Tokens.Jwt;
+using System.Linq;
+using System.Security.Claims;
+using System.Text;
+using System.Threading.Tasks;
 
-namespace RecordManagementSystem.Infrastructure.Services;
-
-public class RefreshTokenService : IRefreshToken
+namespace RecordManagementSystem.Infrastructure.Services
 {
-    private readonly ApplicationDbContext _context;
-    public RefreshTokenService(ApplicationDbContext context) => _context = context;
-
-    public async Task AddAsync(RefreshToken refreshToken)
+    public class AuthService : IAuthService
     {
-        _context.RefreshTokens.Add(refreshToken);
-        await _context.SaveChangesAsync();
-    }
+        private readonly SignInManager<UserIdentity> _signInManager;
+        private readonly ApplicationDbContext _context;
+        private readonly UserManager<UserIdentity> _userManager;
+        private readonly RoleManager<IdentityRole> _roleManager;
+        private readonly IJwtToken _jwtToken;
+        private readonly IConfiguration _configuration;
+        private readonly IHttpContextAccessor _httpContextAccessor;
+        public AuthService(SignInManager<UserIdentity> signInManager, 
+                           UserManager<UserIdentity> userManager,
+                           ApplicationDbContext context,
+                           RoleManager<IdentityRole> roleManager,
+                           IJwtToken jwtToken,
+                           IConfiguration configuration)
+        {
+            _signInManager = signInManager;
+            _userManager = userManager;
+            _context = context;
+            _roleManager = roleManager;
+            _jwtToken = jwtToken;
+            _configuration = configuration;
+        }
+        public async Task<GenerateJwtTokenResponseDTO> Login(LoginDTO loginDTO)
+        {
+            var findUser = await _userManager.FindByEmailAsync(loginDTO.Email);
+            if (findUser is null) return null;
 
-    public async Task<RefreshToken?> GetByTokenAsync(string token) =>
-        await _context.RefreshTokens.FirstOrDefaultAsync(x => x.Token == token && !x.IsRevoked);
+            var isLogin = await _userManager.CheckPasswordAsync(findUser, loginDTO.Password);
+            if (!isLogin) return null;
 
-    public async Task UpdateAsync(RefreshToken refreshToken)
-    {
-        _context.RefreshTokens.Update(refreshToken);
-        await _context.SaveChangesAsync();
+            var getUserRoles = await _userManager.GetRolesAsync(findUser);
+
+            GenerateTokenDTO user = new GenerateTokenDTO
+            {
+                id = findUser.Id,
+                username = findUser.UserName,
+                email = findUser.Email,
+                Roles = getUserRoles
+            };
+
+            var accessToken = _jwtToken.GenerateAccessJwtToken(user);
+            var refreshToken = _jwtToken.GenerateRefreshJwtToken();
+
+    
+            var refreshTokenDurationMinutes = int.Parse(_configuration["Jwt:RefreshTokenDurationInMinutes"] ?? "2");
+            findUser.RefreshTokenHash = _jwtToken.HashRefreshToken(refreshToken);
+            findUser.RefreshTokenExpiryTime = DateTime.UtcNow.AddMinutes(refreshTokenDurationMinutes);
+
+            await _userManager.UpdateAsync(findUser);
+
+            return new GenerateJwtTokenResponseDTO
+            {
+                AccessToken = accessToken,
+                RefreshToken = refreshToken
+            };
+        }
+
+        public async Task<Result<JwtRefreshTokenResponseDTO>> JwtRefreshToken(JwtRefreshTokenRequestDTO tokenRequest)
+        {
+            var principal = _jwtToken.GetPrincipalFromExpiredJwtToken(tokenRequest.newAccessToken);
+            if (principal is null)
+                return Result<JwtRefreshTokenResponseDTO>.Fail("Principal is null");
+
+            var username = principal.FindFirst(JwtRegisteredClaimNames.Sub)?.Value
+                           ?? principal.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                           ?? principal.FindFirst("name")?.Value;
+
+            if (username is null)
+                return Result<JwtRefreshTokenResponseDTO>.Fail("Cannot find username in token");
+
+            // Fetch user
+            var user = await _userManager.Users.AsNoTracking().FirstOrDefaultAsync(u => u.UserName == username);
+            if (user is null)
+                return Result<JwtRefreshTokenResponseDTO>.Fail("User not found");
+
+            // Check if refresh token expired
+            if (!user.RefreshTokenExpiryTime.HasValue || user.RefreshTokenExpiryTime.Value <= DateTime.UtcNow)
+                return Result<JwtRefreshTokenResponseDTO>.Fail("Refresh token expired");
+
+            // Verify refresh token hash
+            bool isValidRefreshToken = _jwtToken.VerfiyHashedJwtToken(user.RefreshTokenHash, tokenRequest.newRefreshToken);
+            if (!isValidRefreshToken)
+                return Result<JwtRefreshTokenResponseDTO>.Fail("Invalid or reused refresh token");
+
+            //Optional: enforce single-use (invalidate after 1 refresh)
+            var trackedUser = await _userManager.FindByIdAsync(user.Id);
+            trackedUser.RefreshTokenHash = null;
+            trackedUser.RefreshTokenExpiryTime = null;
+            await _userManager.UpdateAsync(trackedUser);
+
+            //Generate new access token only (no new refresh token)
+            var roles = await _userManager.GetRolesAsync(user);
+            var newAccessToken = _jwtToken.GenerateAccessJwtToken(new GenerateTokenDTO
+            {
+                id = user.Id,
+                username = user.UserName,
+                email = user.Email,
+                Roles = roles
+            });
+
+            return Result<JwtRefreshTokenResponseDTO>.Ok(new JwtRefreshTokenResponseDTO
+            {
+                newAccessToken = newAccessToken,
+                newRefreshToken = tokenRequest.newRefreshToken
+            });
+        }
+
+
+        public async Task Logout()
+        {
+            var user = await _userManager.FindByEmailAsync("your login user email or username");
+            if (user is  not null)
+            {
+                user.RefreshTokenHash = null;
+                user.RefreshTokenExpiryTime = null;
+                await _userManager.UpdateAsync(user);
+
+                await _signInManager.SignOutAsync();
+            }
+        }
+
     }
 }
+
 ```
 
----
-
-## 6️⃣ Use Token Service in `AuthService` (Application Layer)
-
-```csharp
-public async Task<TokenResponseDTO> Login(LoginDTO loginDTO)
-{
-    var isLogin = await _authService.Login(loginDTO);
-    if (!isLogin) throw new UnauthorizedAccessException("Invalid credentials!");
-
-    var token = _generateTokenService.GenerateToken(loginDTO.Email, "Student");
-
-    await _refreshToken.AddAsync(new RefreshToken
-    {
-        Username = loginDTO.Email,
-        Token = token.RefreshToken,
-        ExpiryDate = token.RefreshTokenExpiry,
-        IsRevoked = false
-    });
-
-    return token;
-}
-
-public async Task<TokenResponseDTO> RefreshToken(RefreshTokenDTO refreshTokenDTO)
-{
-    var savedToken = await _refreshToken.GetByTokenAsync(refreshTokenDTO.RefreshToken);
-    if (savedToken is null || savedToken.ExpiryDate < DateTime.UtcNow)
-        throw new UnauthorizedAccessException("Invalid or expired refresh token");
-
-    var newTokens = _generateTokenService.GenerateToken(savedToken.Username, "Student");
-    savedToken.Token = newTokens.RefreshToken;
-    savedToken.ExpiryDate = newTokens.RefreshTokenExpiry;
-    await _refreshToken.UpdateAsync(savedToken);
-
-    return newTokens;
-}
-```
 
 ---
 
 ## 7️⃣ Configure Authentication in `Program.cs`
 
 ```csharp
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.IdentityModel.Tokens;
-using System.Text;
 
+//JWT token configuration
 var jwtSettings = builder.Configuration.GetSection("Jwt");
+var key = Encoding.UTF8.GetBytes(jwtSettings["key"]!);
 
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
     options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
 })
-.AddJwtBearer(options =>
-{
-    options.TokenValidationParameters = new TokenValidationParameters
+    .AddJwtBearer(options =>
     {
-        ValidateIssuer = true,
-        ValidateAudience = true,
-        ValidateLifetime = true,
-        ValidateIssuerSigningKey = true,
-        ValidIssuer = jwtSettings["Issuer"],
-        ValidAudience = jwtSettings["Audience"],
-        IssuerSigningKey = new SymmetricSecurityKey(
-            Encoding.UTF8.GetBytes(jwtSettings["key"]))
-    };
-});
+        options.RequireHttpsMetadata = true;
+        options.SaveToken = true;
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            ValidIssuer = jwtSettings["Issuer"],
+            ValidAudience = jwtSettings["Audience"],
+            IssuerSigningKey = new SymmetricSecurityKey(key),
+            RoleClaimType = ClaimTypes.Role,
+
+            ClockSkew = TimeSpan.Zero // remove 5 minutes grace
+            //kase kahit 1 minute na yung JWT token automatic may palugit na additional 5 minutes or 6 minutes bago tuluyan mawala
+        };
+
+    });
 
 builder.Services.AddAuthorization();
 ```

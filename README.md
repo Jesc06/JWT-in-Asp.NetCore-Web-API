@@ -250,17 +250,195 @@ namespace KapeRest.Infrastructures.Services.JwtService
 ```
 
 
-## 7️⃣ `Implementing JWTService in AuthService`
+## 7️⃣ `Implementing JWTService in Repositories`
 
 ```csharp
-using Microsoft.AspNetCore.Http;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using KapeRest.Application.Interfaces.Account;
+using KapeRest.Infrastructures.Persistence.Database;
 using Microsoft.AspNetCore.Identity;
-using Microsoft.EntityFrameworkCore;
+using KapeRest.Application.DTOs.Account;
 using Microsoft.Extensions.Configuration;
-using RecordManagementSystem.Application.Common.Models;
-using RecordManagementSystem.Application.Features.Account.DTO;
-using RecordManagementSystem.Application.Features.Account.Interface;
-using RecordManagementSystem.Infrastructure.Persistence.Data;
+using KapeRest.Application.Interfaces.Jwt;
+using KapeRest.Application.DTOs.Jwt;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Http;
+
+namespace KapeRest.Infrastructures.Persistence.Repositories.Account
+{
+    public class RegisterAccountRepositories : IAccounts
+    {
+        private readonly UserManager<Users> _userManager;
+        private readonly SignInManager<Users> _signInManager;
+        private readonly ApplicationDbContext _context;
+        private readonly IConfiguration _config;
+        private readonly IJwtService _jwtService;
+        private readonly RoleManager<IdentityRole> _roleManager;
+        private readonly IHttpContextAccessor _httpContextAccessor;
+        public RegisterAccountRepositories(
+                UserManager<Users> userManager,
+                SignInManager<Users> signInManager,
+                ApplicationDbContext context,
+                RoleManager<IdentityRole> roleManager,
+                IConfiguration config,
+                IJwtService jwtService,
+                IHttpContextAccessor httpContextAccessor
+                )
+        {
+            _userManager = userManager;
+            _signInManager = signInManager;
+            _context = context;
+            _roleManager = roleManager;
+            _config = config;
+            _jwtService = jwtService;
+            _httpContextAccessor = httpContextAccessor;
+        }
+
+        public async Task<bool> RegisterAccount(RegisterAccountDTO register)
+        {
+            var users = new Users
+            {
+                FirstName = register.FirstName,
+                MiddleName = register.MiddleName,
+                LastName = register.LastName,
+                UserName = register.Email,
+                Email = register.Email,
+            };
+            var registerUser = await _userManager.CreateAsync(users, register.Password);
+            if (registerUser.Succeeded)
+            {
+                if(register.Roles.Equals("Admin",StringComparison.InvariantCultureIgnoreCase))
+                    throw new Exception("Cannot assign Admin role during registration.");
+
+                await _userManager.AddToRoleAsync(users, register.Roles);
+                return true;
+            }
+            return false;
+        }
+
+        public async Task<CreateJwtTokenDTO> Login(LoginDTO login)
+        {
+            var user = await _userManager.FindByEmailAsync(login.Email);
+            if (user == null) return null;
+
+            var isLogin = await _userManager.CheckPasswordAsync(user, login.Password);
+            if (!isLogin) return null;
+
+            var getUserRoles = await _userManager.GetRolesAsync(user);
+
+            var payload = new JwtPayloadDTO
+            {
+                id = user.Id,
+                username = user.UserName,
+                email = user.Email,
+                roles = getUserRoles
+            };
+
+            var token = _jwtService.CreateToken(payload);
+            var refreshToken = _jwtService.RefreshToken();
+
+            var tokenExpiry = int.Parse(_config["Jwt:TokenDurationInMinutes"] ?? "1");
+            user.RefreshTokenHash = _jwtService.HashToken(refreshToken);
+            user.RefreshTokenExpiryTime = DateTime.UtcNow.AddMinutes(tokenExpiry);
+
+            await _userManager.UpdateAsync(user);   
+
+            return new CreateJwtTokenDTO
+            {
+                token =  token,
+                refreshToken = refreshToken
+            };
+
+        }
+
+        public async Task<JwtRefreshResponseDTO> RefreshToken(JwtRefreshRequestDTO requestDTO)
+        {
+            var principal = _jwtService.GetPrincipalFromExpiredToken(requestDTO.requestToken);
+            if (principal is null)
+                return null;
+
+            var username = principal.FindFirst(JwtRegisteredClaimNames.Sub)?.Value
+                           ?? principal.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                           ?? principal.FindFirst("name")?.Value;
+
+            if(username is null)
+                return null;
+
+            var user = await _userManager.Users.AsNoTracking().FirstOrDefaultAsync(u => u.UserName == username);
+            if (user is null)
+                return null;
+
+            if(!user.RefreshTokenExpiryTime.HasValue || user.RefreshTokenExpiryTime.Value <= DateTime.UtcNow)
+                return null;
+
+            bool isValidRefreshToken = _jwtService.VerifyHashedToken(user.RefreshTokenHash ?? "", requestDTO.requestRefreshToken);
+            if (!isValidRefreshToken)
+                return null;
+
+            var trackUser = await _userManager.FindByIdAsync(user.Id);
+            trackUser.RefreshTokenHash = null;
+            trackUser.RefreshTokenExpiryTime = null;
+            await _userManager.UpdateAsync(trackUser);
+
+            var roles = await _userManager.GetRolesAsync(user);
+            var newToken = _jwtService.CreateToken(new JwtPayloadDTO
+            {
+                id = user.Id,
+                username = user.UserName,
+                email = user.Email,
+                roles = roles
+            });
+
+            return new JwtRefreshResponseDTO
+            {
+                responseToken = newToken,
+                responseRefreshToken = requestDTO.requestRefreshToken
+            };
+
+
+        }
+
+
+
+    }
+}
+
+
+```
+
+## 7️⃣ `Implementing Logout in Repositories`
+
+### `ICurrentUser`
+```csharp
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace KapeRest.Application.Interfaces.CurrentUserService
+{
+    public interface ICurrentUser
+    {
+        string? Email { get; }
+        string? UserId { get; }
+    }
+}
+
+```
+
+---
+
+### `CurrentUserService`
+```csharp
+using KapeRest.Application.Interfaces.CurrentUserService;
+using Microsoft.AspNetCore.Http;
 using System;
 using System.Collections.Generic;
 using System.IdentityModel.Tokens.Jwt;
@@ -269,173 +447,105 @@ using System.Security.Claims;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace RecordManagementSystem.Infrastructure.Services
+namespace KapeRest.Infrastructures.Services.CurrentUserService
 {
-    public class AuthService : IAuthService
+    public class CurrentUserService : ICurrentUser
     {
-        private readonly SignInManager<UserIdentity> _signInManager;
-        private readonly ApplicationDbContext _context;
-        private readonly UserManager<UserIdentity> _userManager;
-        private readonly RoleManager<IdentityRole> _roleManager;
-        private readonly IJwtToken _jwtToken;
-        private readonly IConfiguration _configuration;
         private readonly IHttpContextAccessor _httpContextAccessor;
-        public AuthService(SignInManager<UserIdentity> signInManager, 
-                           UserManager<UserIdentity> userManager,
-                           ApplicationDbContext context,
-                           RoleManager<IdentityRole> roleManager,
-                           IJwtToken jwtToken,
-                           IConfiguration configuration)
+        public CurrentUserService(IHttpContextAccessor httpContextAccessor)
         {
-            _signInManager = signInManager;
-            _userManager = userManager;
-            _context = context;
-            _roleManager = roleManager;
-            _jwtToken = jwtToken;
-            _configuration = configuration;
+            _httpContextAccessor = httpContextAccessor;
         }
-        public async Task<GenerateJwtTokenResponseDTO> Login(LoginDTO loginDTO)
+        public string? Email => _httpContextAccessor.HttpContext?.User?.FindFirstValue(ClaimTypes.Email);
+        public string? UserId => _httpContextAccessor.HttpContext?.User?.FindFirstValue(ClaimTypes.NameIdentifier);
+    }
+}
+
+
+```
+
+---
+
+
+### `Auth Repositories`
+```csharp
+       public async Task Logout(string username)
+       {
+           var user = await _userManager.FindByNameAsync(username);
+           if (user == null) return;
+
+           user.RefreshTokenHash = null;
+           user.RefreshTokenExpiryTime = null;
+           await _userManager.UpdateAsync(user);
+       }
+```
+
+---
+
+### `Auth Application Service`
+```csharp
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using KapeRest.Application.Interfaces.Account;
+using KapeRest.Application.DTOs.Account;
+using KapeRest.Application.DTOs.Jwt;
+using KapeRest.Application.Interfaces.CurrentUserService;
+
+namespace KapeRest.Application.Services.Account
+{
+    public class AccountService
+    {
+        private IAccounts _accountRepository;
+        private ICurrentUser _currentUser;
+        public AccountService(IAccounts accountRepository, ICurrentUser currentUser)
         {
-            var findUser = await _userManager.FindByEmailAsync(loginDTO.Email);
-            if (findUser is null) return null;
-
-            var isLogin = await _userManager.CheckPasswordAsync(findUser, loginDTO.Password);
-            if (!isLogin) return null;
-
-            var getUserRoles = await _userManager.GetRolesAsync(findUser);
-
-            GenerateTokenDTO user = new GenerateTokenDTO
-            {
-                id = findUser.Id,
-                username = findUser.UserName,
-                email = findUser.Email,
-                Roles = getUserRoles
-            };
-
-            var accessToken = _jwtToken.GenerateAccessJwtToken(user);
-            var refreshToken = _jwtToken.GenerateRefreshJwtToken();
-
-    
-            var refreshTokenDurationMinutes = int.Parse(_configuration["Jwt:RefreshTokenDurationInMinutes"] ?? "2");
-            findUser.RefreshTokenHash = _jwtToken.HashRefreshToken(refreshToken);
-            findUser.RefreshTokenExpiryTime = DateTime.UtcNow.AddMinutes(refreshTokenDurationMinutes);
-
-            await _userManager.UpdateAsync(findUser);
-
-            return new GenerateJwtTokenResponseDTO
-            {
-                AccessToken = accessToken,
-                RefreshToken = refreshToken
-            };
+            _accountRepository = accountRepository;
+            _currentUser = currentUser;
         }
-
-        public async Task<Result<JwtRefreshTokenResponseDTO>> JwtRefreshToken(JwtRefreshTokenRequestDTO tokenRequest)
-        {
-            var principal = _jwtToken.GetPrincipalFromExpiredJwtToken(tokenRequest.newAccessToken);
-            if (principal is null)
-                return Result<JwtRefreshTokenResponseDTO>.Fail("Principal is null");
-
-            var username = principal.FindFirst(JwtRegisteredClaimNames.Sub)?.Value
-                           ?? principal.FindFirst(ClaimTypes.NameIdentifier)?.Value
-                           ?? principal.FindFirst("name")?.Value;
-
-            if (username is null)
-                return Result<JwtRefreshTokenResponseDTO>.Fail("Cannot find username in token");
-
-            // Fetch user
-            var user = await _userManager.Users.AsNoTracking().FirstOrDefaultAsync(u => u.UserName == username);
-            if (user is null)
-                return Result<JwtRefreshTokenResponseDTO>.Fail("User not found");
-
-            // Check if refresh token expired
-            if (!user.RefreshTokenExpiryTime.HasValue || user.RefreshTokenExpiryTime.Value <= DateTime.UtcNow)
-                return Result<JwtRefreshTokenResponseDTO>.Fail("Refresh token expired");
-
-            // Verify refresh token hash
-            bool isValidRefreshToken = _jwtToken.VerfiyHashedJwtToken(user.RefreshTokenHash, tokenRequest.newRefreshToken);
-            if (!isValidRefreshToken)
-                return Result<JwtRefreshTokenResponseDTO>.Fail("Invalid or reused refresh token");
-
-            //Optional: enforce single-use (invalidate after 1 refresh)
-            var trackedUser = await _userManager.FindByIdAsync(user.Id);
-            trackedUser.RefreshTokenHash = null;
-            trackedUser.RefreshTokenExpiryTime = null;
-            await _userManager.UpdateAsync(trackedUser);
-
-            //Generate new access token only (no new refresh token)
-            var roles = await _userManager.GetRolesAsync(user);
-            var newAccessToken = _jwtToken.GenerateAccessJwtToken(new GenerateTokenDTO
-            {
-                id = user.Id,
-                username = user.UserName,
-                email = user.Email,
-                Roles = roles
-            });
-
-            return Result<JwtRefreshTokenResponseDTO>.Ok(new JwtRefreshTokenResponseDTO
-            {
-                newAccessToken = newAccessToken,
-                newRefreshToken = tokenRequest.newRefreshToken
-            });
-        }
-
 
         public async Task Logout()
         {
-            var user = await _userManager.FindByEmailAsync("your login user email or username");
-            if (user is  not null)
-            {
-                user.RefreshTokenHash = null;
-                user.RefreshTokenExpiryTime = null;
-                await _userManager.UpdateAsync(user);
+            var email = _currentUser.Email;
+            if (string.IsNullOrEmpty(email))
+                throw new Exception("User is not logged in.");
 
-                await _signInManager.SignOutAsync();
-            }
+            await _accountRepository.Logout(email);
         }
-
     }
 }
 
 ```
 
-
----
-
 ## 7️⃣ Configure Authentication in `Program.cs`
 
 ```csharp
 
-//JWT token configuration
-var jwtSettings = builder.Configuration.GetSection("Jwt");
-var key = Encoding.UTF8.GetBytes(jwtSettings["key"]!);
-
+#region --JWT Authentication--
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
     options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
 })
-    .AddJwtBearer(options =>
+.AddJwtBearer(options =>
+{
+    options.TokenValidationParameters = new TokenValidationParameters
     {
-        options.RequireHttpsMetadata = true;
-        options.SaveToken = true;
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidateAudience = true,
-            ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
-            ValidIssuer = jwtSettings["Issuer"],
-            ValidAudience = jwtSettings["Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(key),
-            RoleClaimType = ClaimTypes.Role,
-
-            ClockSkew = TimeSpan.Zero // remove 5 minutes grace
-            //kase kahit 1 minute na yung JWT token automatic may palugit na additional 5 minutes or 6 minutes bago tuluyan mawala
-        };
-
-    });
+        ValidateIssuer = true,
+        ValidateAudience = true,
+        ValidIssuer = builder.Configuration["Jwt:Issuer"],
+        ValidAudience = builder.Configuration["Jwt:Audience"],
+        ValidateIssuerSigningKey = true,
+        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["Jwt:key"])),
+        ValidateLifetime = true,
+        ClockSkew = TimeSpan.Zero // remove 5 minutes grace
+    };
+});
 
 builder.Services.AddAuthorization();
+#endregion
 ```
 
 Enable middleware:
@@ -446,6 +556,38 @@ app.UseAuthorization();
 ```
 
 ---
+
+# `Enable Authorize UI in Swagger`
+
+```csharp
+builder.Services.AddSwaggerGen(options =>
+{
+    var jwtSecurityScheme = new OpenApiSecurityScheme
+    {
+        BearerFormat = "JWT",
+        Name = "Authorization",
+        In = ParameterLocation.Header,
+        Type = SecuritySchemeType.Http,
+        Scheme = JwtBearerDefaults.AuthenticationScheme,
+        Description =  "Enter your JWT Access Token",
+        Reference = new OpenApiReference
+        {
+            Id = JwtBearerDefaults.AuthenticationScheme,
+            Type = ReferenceType.SecurityScheme
+        }
+    };
+
+    options.AddSecurityDefinition("Bearer", jwtSecurityScheme);
+    options.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        { jwtSecurityScheme, Array.Empty<string>() }
+    });
+
+});
+```
+
+---
+
 
 ✅ **Done!**  
 Your API is now secured with **JWT authentication + refresh tokens**.  

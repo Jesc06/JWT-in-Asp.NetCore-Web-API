@@ -47,7 +47,7 @@ dotnet add package System.IdentityModel.Tokens.Jwt
 
 ## 4️⃣ Create DTOs
 
-### `GenerateTokenDTO`
+### `JwtPayloadDTO`
 ```csharp
 using System;
 using System.Collections.Generic;
@@ -55,41 +55,21 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace RecordManagementSystem.Application.Features.Account.DTO
+namespace KapeRest.Application.DTOs.Jwt
 {
-    public class JwtApplicationUserDTO
+    public class JwtPayloadDTO
     {
         public string id { get; set; }
         public string username { get; set; }
         public string email { get; set; }
-        public IList<string> Roles { get; set; } = new List<string>();
-    }
-}   
-
-
-```
-
-### `GenerateJwtTokenResponseDTO`
-```csharp
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
-namespace RecordManagementSystem.Application.Features.Account.DTO
-{
-    public class GenerateJwtTokenResponseDTO
-    {
-        public string AccessToken { get; set; } 
-        public string RefreshToken { get; set; }
+        public IList<string> roles { get; set; }
     }
 }
 
 
 ```
 
-### `JwtRefreshTokenResponseDTO`
+### `CreateJwtTokenDTO`
 ```csharp
 using System;
 using System.Collections.Generic;
@@ -97,18 +77,20 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace RecordManagementSystem.Application.Features.Account.DTO
+namespace KapeRest.Application.DTOs.Jwt
 {
-    public class JwtRefreshTokenRequestDTO
+    public class CreateJwtTokenDTO
     {
-        public string newAccessToken { get; set; }
-        public string newRefreshToken { get; set; }
+        public string token { get; set; }
+        public string refreshToken { get; set; }    
     }
 }
 
+
+
 ```
 
-### `JwtRefreshTokenRequestDTO`
+### `JwtRefreshResponseDTO`
 ```csharp
 using System;
 using System.Collections.Generic;
@@ -116,12 +98,32 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace RecordManagementSystem.Application.Features.Account.DTO
+namespace KapeRest.Application.DTOs.Jwt
 {
-    public class JwtRefreshTokenRequestDTO
+    public class JwtRefreshResponseDTO
     {
-        public string newAccessToken { get; set; }
-        public string newRefreshToken { get; set; }
+        public string responseToken { get; set; }
+        public string responseRefreshToken { get; set; }
+    }
+}
+
+
+```
+
+### `JwtRefreshRequestDTO`
+```csharp
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace KapeRest.Application.DTOs.Jwt
+{
+    public class JwtRefreshRequestDTO
+    {
+        public string requestToken { get; set; }    
+        public string requestRefreshToken { get; set; }
     }
 }
 
@@ -135,60 +137,67 @@ namespace RecordManagementSystem.Application.Features.Account.DTO
 Generates JWT + Refresh tokens when user logs in.
 
 ```csharp
+
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using KapeRest.Application.Interfaces.Jwt;
 using Microsoft.Extensions.Configuration;
-using RecordManagementSystem.Application.Features.Account.Interface;
-using RecordManagementSystem.Application.Features.Account.DTO;
+using KapeRest.Application.DTOs.Jwt;
 using System.Security.Claims;
 using System.IdentityModel.Tokens.Jwt;
 using Microsoft.IdentityModel.Tokens;
 using System.Security.Cryptography;
+using System.Runtime.Intrinsics.Arm;
+using System.Net.Http.Headers;
 
-namespace RecordManagementSystem.Infrastructure.Services
+namespace KapeRest.Infrastructures.Services.JwtService
 {
-    public class JwtService : IJwtToken
+    public class GenerateToken : IJwtService
     {
-        private readonly IConfiguration _configuration;
+        private readonly IConfiguration _config;
         private readonly Byte[] _key;
-        public JwtService(IConfiguration configuration)
+        public GenerateToken(IConfiguration config)
         {
-            _configuration = configuration;
-            _key = Encoding.UTF8.GetBytes(_configuration["Jwt:key"]!);
+            _config = config;
+            _key = Encoding.UTF8.GetBytes(_config["Jwt:key"]!);
         }
 
-        public string GenerateAccessJwtToken(GenerateTokenDTO user, IEnumerable<Claim>? additionalClaims = null)
+        public string CreateToken(JwtPayloadDTO payload, IEnumerable<Claim>? additionalClaim = null)
         {
-            var duration = double.Parse(_configuration["Jwt:DurationInMinutes"] ?? "1");
+            var expiry = double.Parse(_config["Jwt:TokenDurationInMinutes"] ?? "1");
 
             var claims = new List<Claim>
             {
-                new Claim(JwtRegisteredClaimNames.Sub, user.username ?? ""),
+                new Claim(JwtRegisteredClaimNames.Sub, payload.username ?? ""),
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
-                new Claim("uid", user.id.ToString())
+                new Claim("uid", payload.id.ToString()),
+                new Claim(ClaimTypes.Email, payload.email ?? ""),
+                new Claim(ClaimTypes.NameIdentifier, payload.id.ToString())
             };
-            if (user.Roles != null)
-                claims.AddRange(user.Roles.Select(r => new Claim("role", r)));
 
-            if (additionalClaims != null)
-                claims.AddRange(additionalClaims);
+            if (payload.roles != null)
+                claims.AddRange(payload.roles.Select(r => new Claim(ClaimTypes.Role, r)));
+
+            if (additionalClaim != null)
+                claims.AddRange(additionalClaim);
 
             var credentials = new SigningCredentials(new SymmetricSecurityKey(_key), SecurityAlgorithms.HmacSha256);
+
             var token = new JwtSecurityToken(
-                issuer: _configuration["Jwt:Issuer"],
-                audience: _configuration["Jwt:Audience"],
+                issuer: _config["Jwt:Issuer"],
+                audience: _config["Jwt:Audience"],
                 claims: claims,
-                expires: DateTime.UtcNow.AddMinutes(duration),
+                expires: DateTime.UtcNow.AddMinutes(expiry),
                 signingCredentials: credentials
             );
 
             return new JwtSecurityTokenHandler().WriteToken(token);
         }
 
-        public string GenerateRefreshJwtToken()
+        public string RefreshToken()
         {
             var bytes = new byte[64];
             using var rng = RandomNumberGenerator.Create();
@@ -196,47 +205,47 @@ namespace RecordManagementSystem.Infrastructure.Services
             return Convert.ToBase64String(bytes);
         }
 
-        public string HashRefreshToken(string token)
+        public string HashToken(string token)
         {
             using var sha256 = SHA256.Create();
             var bytes = Encoding.UTF8.GetBytes(token);
             return Convert.ToBase64String(sha256.ComputeHash(bytes));
         }
 
-        public bool VerfiyHashedJwtToken(string hash, string token)
+        public bool VerifyHashedToken(string hashedToken, string token)
         {
-            return hash == HashRefreshToken(token);
+            return hashedToken == HashToken(token);
         }
 
-        public ClaimsPrincipal? GetPrincipalFromExpiredJwtToken(string token)
+        public ClaimsPrincipal? GetPrincipalFromExpiredToken(string token)
         {
             var validationParams = new TokenValidationParameters
             {
                 ValidateIssuer = true,
                 ValidateAudience = true,
-                ValidIssuer = _configuration["Jwt:Issuer"],
-                ValidAudience = _configuration["Jwt:Audience"],
+                ValidIssuer = _config["Jwt:Issuer"],
+                ValidAudience = _config["Jwt:Audience"],
                 ValidateIssuerSigningKey = true,
                 IssuerSigningKey = new SymmetricSecurityKey(_key),
                 ValidateLifetime = false // allow expired token to get claims
             };
-
             var handler = new JwtSecurityTokenHandler();
             try
             {
                 var principal = handler.ValidateToken(token, validationParams, out var securityToken);
                 if (securityToken is not JwtSecurityToken jwt ||
                     !jwt.Header.Alg.Equals(SecurityAlgorithms.HmacSha256, StringComparison.InvariantCultureIgnoreCase))
-                    return null;
+                     return null;
+
                 return principal;
             }
-            catch
-            {
-                return null;
-            }
+            catch { return null; }
         }
+
+
     }
 }
+
 
 ```
 
